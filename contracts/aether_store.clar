@@ -5,6 +5,12 @@
 (define-constant err-invalid-rating (err u102))
 (define-constant err-insufficient-funds (err u103))
 (define-constant err-out-of-stock (err u104))
+(define-constant err-invalid-price (err u105))
+(define-constant err-invalid-inventory (err u106))
+(define-constant err-not-purchaser (err u107))
+
+;; Data variables
+(define-data-var product-counter uint u0)
 
 ;; Data structures
 (define-map products 
@@ -35,10 +41,20 @@
   }
 )
 
-;; Product listing
+(define-map purchases
+  {product-id: uint, buyer: principal}
+  {purchased: bool}
+)
+
+;; Events
+(define-data-var last-event-id uint u0)
+
 (define-public (list-product (name (string-ascii 100)) (price uint) (inventory uint) (description (string-ascii 500)))
-  (let ((product-id (+ u1 (default-to u0 (get-last-product-id)))))
-    (map-set products product-id
+  (begin
+    (asserts! (> price u0) err-invalid-price)
+    (asserts! (> inventory u0) err-invalid-inventory)
+    (var-set product-counter (+ (var-get product-counter) u1))
+    (map-set products (var-get product-counter)
       {
         name: name,
         price: price,
@@ -47,11 +63,11 @@
         description: description
       }
     )
-    (ok product-id)
+    (print {event: "product-listed", product-id: (var-get product-counter), seller: tx-sender})
+    (ok (var-get product-counter))
   )
 )
 
-;; Purchase product
 (define-public (purchase-product (product-id uint) (seller principal))
   (let (
     (product (unwrap! (map-get? products product-id) err-not-found))
@@ -63,22 +79,25 @@
     (map-set products product-id
       (merge product { inventory: (- current-inventory u1) })
     )
-    (update-seller-stats seller u1)
+    (map-set purchases {product-id: product-id, buyer: tx-sender} {purchased: true})
+    (try! (update-seller-stats seller u1))
+    (print {event: "product-purchased", product-id: product-id, buyer: tx-sender})
     (ok true)
   )
 )
 
-;; Review system
 (define-public (add-review (product-id uint) (rating uint) (comment (string-ascii 240)))
   (begin
     (asserts! (<= rating u5) err-invalid-rating)
     (asserts! (is-some (map-get? products product-id)) err-not-found)
+    (asserts! (default-to false (get purchased (map-get? purchases {product-id: product-id, buyer: tx-sender}))) err-not-purchaser)
     (let ((product (unwrap-panic (map-get? products product-id))))
       (map-set reviews 
         {product-id: product-id, reviewer: tx-sender}
         {rating: rating, comment: comment}
       )
-      (update-seller-rating (get seller product) rating)
+      (try! (update-seller-rating (get seller product) rating))
+      (print {event: "review-added", product-id: product-id, reviewer: tx-sender})
       (ok true)
     )
   )
@@ -129,5 +148,5 @@
 )
 
 (define-read-only (get-last-product-id)
-  (ok (default-to u0 (map-get? products u0)))
+  (ok (var-get product-counter))
 )
